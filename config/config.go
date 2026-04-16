@@ -1,0 +1,78 @@
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// Config holds the application configuration.
+type Config struct {
+	APIAddr string `json:"api_addr,omitempty"` // API server listen address
+}
+
+// DefaultConfig returns an empty configuration.
+func DefaultConfig() *Config {
+	return &Config{}
+}
+
+// ConfigPath returns the path to the config file.
+func ConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".weclaw", "config.json"), nil
+}
+
+// Load loads configuration from disk and environment variables.
+func Load() (*Config, error) {
+	cfg := DefaultConfig()
+
+	path, err := ConfigPath()
+	if err != nil {
+		return cfg, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			loadEnv(cfg)
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	loadEnv(cfg)
+	return cfg, nil
+}
+
+func loadEnv(cfg *Config) {
+	if v := os.Getenv("WECLAW_API_ADDR"); v != "" {
+		cfg.APIAddr = v
+	}
+}
+
+// Save saves the configuration to disk.
+func Save(cfg *Config) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0o600)
+}

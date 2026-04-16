@@ -1,0 +1,99 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776332344213,
+  "projectRoot": "/home/jiwei/projects/github/weclaw/weclaw-pusher",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "api": {
+      "path": "api",
+      "purpose": "API routes",
+      "fileCount": 1,
+      "lastAccessed": 1776332344208,
+      "keyFiles": [
+        "server.go"
+      ]
+    },
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1776332344210,
+      "keyFiles": [
+        "listen.go",
+        "login.go",
+        "root.go",
+        "send.go",
+        "serve.go"
+      ]
+    },
+    "config": {
+      "path": "config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1776332344210,
+      "keyFiles": [
+        "config.go"
+      ]
+    },
+    "ilink": {
+      "path": "ilink",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1776332344211,
+      "keyFiles": [
+        "auth.go",
+        "client.go",
+        "monitor.go",
+        "types.go"
+      ]
+    },
+    "messaging": {
+      "path": "messaging",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1776332344211,
+      "keyFiles": [
+        "cdn.go",
+        "markdown.go",
+        "media.go",
+        "sender.go"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
