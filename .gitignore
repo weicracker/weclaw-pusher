@@ -21,5 +21,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+.omc
 ARCHITECTURE.md
 
