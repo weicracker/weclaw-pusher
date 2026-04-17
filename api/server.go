@@ -259,7 +259,7 @@ func (s *Server) doKeepAlive(ctx context.Context) bool {
 
 // clearAllContextTokens clears all cached context_tokens.
 func (s *Server) clearAllContextTokens() {
-	s.contextTokenMap.Range(func key, value interface{}) bool {
+	s.contextTokenMap.Range(func(key, value interface{}) bool {
 		s.contextTokenMap.Delete(key)
 		return true
 	})
