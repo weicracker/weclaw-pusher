@@ -22,13 +22,11 @@ builds:
       - -X github.com/fastclaw-ai/weclaw-pusher/config.Date={{.Date}}
 
 archives:
-  - id: default
-    format: tar.gz
-    format_overrides:
-      - goos: windows
-        format: zip
+  - id: binaries
+    type: binary
     files:
-      - README.md
+      - src: README.md
+        dst: README.md
 
 checksum:
   name_template: 'checksums.txt'
