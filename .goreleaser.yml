@@ -23,10 +23,7 @@ builds:
 
 archives:
   - id: binaries
-    type: binary
-    files:
-      - src: README.md
-        dst: README.md
+    format: binary
 
 checksum:
   name_template: 'checksums.txt'
