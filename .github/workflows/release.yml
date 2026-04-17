@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Get latest tag
+        id: get_last_tag
+        run: |
+          git fetch --tags
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Generate new tag
+        id: new_tag
+        run: |
+          LAST_TAG="${{ steps.get_last_tag.outputs.last_tag }}"
+          if [ -z "$LAST_TAG" ]; then
+            NEW_TAG="v0.1.0"
+          else
+            # Extract version parts
+            TAG_VERSION=${LAST_TAG#v}
+            MAJOR=$(echo $TAG_VERSION | cut -d. -f1)
+            MINOR=$(echo $TAG_VERSION | cut -d. -f2)
+            PATCH=$(echo $TAG_VERSION | cut -d. -f3)
+            # Increment patch version
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Generated new tag: $NEW_TAG"
+
+      - name: Create annotated tag
+        if: steps.new_tag.outputs.new_tag != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.new_tag.outputs.new_tag }} -m "Release ${{ steps.new_tag.outputs.new_tag }}"
+          git push origin ${{ steps.new_tag.outputs.new_tag }}
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git log --oneline --pretty='%h %s' ${{ steps.get_last_tag.outputs.last_tag }}..HEAD 2>/dev/null || git log --oneline --pretty='%h %s' -10)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "## Changes since ${{ steps.get_last_tag.outputs.last_tag }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo '\`\`\`' >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo '\`\`\`' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run GoReleaser
+        if: steps.new_tag.outputs.new_tag != ''
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

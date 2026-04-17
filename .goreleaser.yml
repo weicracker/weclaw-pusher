@@ -1,0 +1,53 @@
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: weclaw-pusher
+    main: ./main.go
+    binary: weclaw-pusher
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/fastclaw-ai/weclaw-pusher/config.Version={{.Version}}
+      - -X github.com/fastclaw-ai/weclaw-pusher/config.Commit={{.Commit}}
+      - -X github.com/fastclaw-ai/weclaw-pusher/config.Date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  id: default
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^CI:'
+
+release:
+  github:
+    owner: fastclaw-ai
+    name: weclaw-pusher
+  draft: false
+  prerelease: auto

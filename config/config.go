@@ -12,6 +12,12 @@ type Config struct {
 	APIAddr string `json:"api_addr,omitempty"` // API server listen address
 }
 
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
+
 // DefaultConfig returns an empty configuration.
 func DefaultConfig() *Config {
 	return &Config{}
