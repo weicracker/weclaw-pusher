@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fastclaw-ai/weclaw-pusher/ilink"
@@ -33,12 +35,14 @@ type SendRequest struct {
 
 // Server provides an HTTP API for sending messages.
 type Server struct {
-	clients  []*ilink.Client
-	addr     string
-	syncBuf  string
-	bufPath  string
-	mu       sync.RWMutex
-	stopChan chan struct{}
+	clients          []*ilink.Client
+	addr             string
+	syncBuf          string
+	bufPath          string
+	mu               sync.RWMutex
+	stopChan         chan struct{}
+	contextTokenMap  sync.Map // key=userID, value=contextToken
+	sessionDead      atomic.Bool // marks if session is dead (bot_token expired)
 }
 
 // NewServer creates an API server.
@@ -154,7 +158,21 @@ func (s *Server) keepAliveMonitor(ctx context.Context) {
 		// Perform keep-alive request
 		shouldBackoff := s.doKeepAlive(ctx)
 
-		if shouldBackoff {
+		if !shouldBackoff {
+			// doKeepAlive returned false - either success or session is dead
+			if s.sessionDead.Load() {
+				log.Printf("[api] keep-alive stopped due to session death, please re-login")
+				return
+			}
+			// Reset backoff on successful keep-alive
+			backoff = keepAliveBackoffBase
+			// Wait before next keep-alive
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(keepAliveInterval):
+			}
+		} else {
 			// Exponential backoff on errors
 			log.Printf("[api] keep-alive backing off for %v", backoff)
 			select {
@@ -166,24 +184,21 @@ func (s *Server) keepAliveMonitor(ctx context.Context) {
 			if backoff > keepAliveBackoffMax {
 				backoff = keepAliveBackoffMax
 			}
-		} else {
-			// Reset backoff on successful keep-alive
-			backoff = keepAliveBackoffBase
-			// Wait before next keep-alive
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(keepAliveInterval):
-			}
 		}
 	}
 }
 
 // doKeepAlive performs a single keep-alive request.
 // Returns true if the caller should back off (error occurred), false for success.
+// Returns false also when session is confirmed dead (bot_token expired with empty syncBuf).
 func (s *Server) doKeepAlive(ctx context.Context) bool {
 	if len(s.clients) == 0 {
 		return true
+	}
+
+	// Check if session is already dead
+	if s.sessionDead.Load() {
+		return false
 	}
 
 	client := s.clients[0]
@@ -207,8 +222,13 @@ func (s *Server) doKeepAlive(ctx context.Context) bool {
 			s.saveSyncBuf()
 			s.mu.Unlock()
 		} else {
+			// syncBuf is empty and session expired - bot_token is invalid
 			log.Printf("[api] WARNING: WeChat session expired and cannot be auto-recovered. Run `weclaw-pusher login` to re-authenticate.")
+			s.sessionDead.Store(true)
+			return false
 		}
+		// Clear all context_token缓存
+		s.clearAllContextTokens()
 		// Wait before retrying
 		select {
 		case <-time.After(sessionExpiredBackoff):
@@ -225,8 +245,40 @@ func (s *Server) doKeepAlive(ctx context.Context) bool {
 		s.mu.Unlock()
 	}
 
+	// Extract and cache context_token from received messages
+	for _, msg := range resp.Msgs {
+		if msg.ContextToken != "" {
+			s.contextTokenMap.Store(msg.FromUserID, msg.ContextToken)
+			log.Printf("[api] cached context_token for user %s", msg.FromUserID)
+		}
+	}
+
 	log.Printf("[api] keep-alive successful")
 	return false
+}
+
+// clearAllContextTokens clears all cached context_tokens.
+func (s *Server) clearAllContextTokens() {
+	s.contextTokenMap.Range(func key, value interface{}) bool {
+		s.contextTokenMap.Delete(key)
+		return true
+	})
+	log.Printf("[api] cleared all context_token cache")
+}
+
+// getContextToken retrieves the cached context_token for a user.
+// Returns empty string if not found.
+func (s *Server) getContextToken(userID string) string {
+	if val, ok := s.contextTokenMap.Load(userID); ok {
+		return val.(string)
+	}
+	return ""
+}
+
+// clearContextToken removes the cached context_token for a user.
+func (s *Server) clearContextToken(userID string) {
+	s.contextTokenMap.Delete(userID)
+	log.Printf("[api] cleared context_token for user %s", userID)
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
@@ -255,13 +307,33 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if session is dead
+	if s.sessionDead.Load() {
+		http.Error(w, "session expired, please re-login", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Use the first client
 	client := s.clients[0]
 	ctx := r.Context()
 
+	// Get cached context_token for the recipient
+	contextToken := s.getContextToken(req.To)
+	if contextToken != "" {
+		log.Printf("[api] using cached context_token for %s", req.To)
+	}
+
 	// Send text if provided
 	if req.Text != "" {
-		if err := messaging.SendTextReply(ctx, client, req.To, req.Text, "", ""); err != nil {
+		if err := messaging.SendTextReply(ctx, client, req.To, req.Text, contextToken, ""); err != nil {
+			// Check for ret=-2 error (invalid context_token)
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "ret=-2") {
+				log.Printf("[api] send failed with ret=-2, clearing context_token for %s", req.To)
+				s.clearContextToken(req.To)
+				http.Error(w, "send failed: context_token invalid or expired, please try again or re-login", http.StatusInternalServerError)
+				return
+			}
 			log.Printf("[api] send text failed: %v", err)
 			http.Error(w, "send text failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -270,7 +342,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 		// Extract and send any markdown images embedded in text
 		for _, imgURL := range messaging.ExtractImageURLs(req.Text) {
-			if err := messaging.SendMediaFromURL(ctx, client, req.To, imgURL, ""); err != nil {
+			if err := messaging.SendMediaFromURL(ctx, client, req.To, imgURL, contextToken); err != nil {
 				log.Printf("[api] send extracted image failed: %v", err)
 			} else {
 				log.Printf("[api] sent extracted image to %s: %s", req.To, imgURL)
@@ -280,7 +352,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	// Send media if provided
 	if req.MediaURL != "" {
-		if err := messaging.SendMediaFromURL(ctx, client, req.To, req.MediaURL, ""); err != nil {
+		if err := messaging.SendMediaFromURL(ctx, client, req.To, req.MediaURL, contextToken); err != nil {
+			// Check for ret=-2 error (invalid context_token)
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "ret=-2") {
+				log.Printf("[api] send media failed with ret=-2, clearing context_token for %s", req.To)
+				s.clearContextToken(req.To)
+				http.Error(w, "send failed: context_token invalid or expired, please try again or re-login", http.StatusInternalServerError)
+				return
+			}
 			log.Printf("[api] send media failed: %v", err)
 			http.Error(w, "send media failed: "+err.Error(), http.StatusInternalServerError)
 			return
