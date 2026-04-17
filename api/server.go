@@ -20,7 +20,7 @@ type Server struct {
 // NewServer creates an API server.
 func NewServer(clients []*ilink.Client, addr string) *Server {
 	if addr == "" {
-		addr = "127.0.0.1:18011"
+		addr = "0.0.0.0:18011"
 	}
 	return &Server{clients: clients, addr: addr}
 }

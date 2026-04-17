@@ -47,7 +47,36 @@ weclaw-pusher send --to "user_id@im.wechat" --text "Hello"
 weclaw-pusher send --to "user_id@im.wechat" --media "https://example.com/image.png"
 ```
 
-### 3. 接收微信消息
+### 3. HTTP API 发送消息
+
+启动服务后（默认 `0.0.0.0:18011`），可以通过 HTTP 接口发送消息：
+
+```bash
+curl -X POST http://localhost:18011/api/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user_id@im.wechat",
+    "text": "你好，这是一条测试消息"
+  }'
+```
+
+发送图片：
+```bash
+curl -X POST http://localhost:18011/api/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user_id@im.wechat",
+    "text": "查看这张图片",
+    "media_url": "https://example.com/image.jpg"
+  }'
+```
+
+健康检查：
+```bash
+curl http://localhost:18011/health
+```
+
+### 4. 接收微信消息
 
 #### PULL 模式（轮询）
 
