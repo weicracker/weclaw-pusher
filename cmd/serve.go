@@ -18,13 +18,16 @@ import (
 )
 
 var (
-	apiAddrFlag    string
-	daemonFlag     bool
+	apiAddrFlag       string
+	daemonFlag         bool
+	daemonInternalFlag bool // internal: prevent re-fork
 )
 
 func init() {
-	serveCmd.Flags().StringVar(&apiAddrFlag, "api-addr", "", "API server listen address (default 127.0.0.1:18011)")
+	serveCmd.Flags().StringVar(&apiAddrFlag, "api-addr", "", "API server listen address (default 0.0.0.0:18011)")
 	serveCmd.Flags().BoolVarP(&daemonFlag, "daemon", "d", false, "Run in background")
+	serveCmd.Flags().BoolVar(&daemonInternalFlag, "internal-daemon", false, "Internal: daemon mode started")
+	serveCmd.Flags().MarkHidden("internal-daemon")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -35,7 +38,7 @@ var serveCmd = &cobra.Command{
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	if daemonFlag {
+	if daemonFlag && !daemonInternalFlag {
 		return runDaemon()
 	}
 
@@ -100,7 +103,12 @@ func runDaemon() error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	c := exec.Command(exe, "serve")
+	// Build args: pass internal-daemon flag and api-addr to prevent re-fork
+	args := []string{"serve", "--internal-daemon"}
+	if apiAddrFlag != "" {
+		args = append(args, "--api-addr", apiAddrFlag)
+	}
+	c := exec.Command(exe, args...)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 

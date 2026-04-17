@@ -19,14 +19,6 @@
 go install github.com/fastclaw-ai/weclaw-pusher@latest
 ```
 
-或从源码编译:
-
-```bash
-git clone https://github.com/fastclaw-ai/weclaw-pusher.git
-cd weclaw-pusher
-go build -o weclaw-pusher .
-```
-
 ## 快速开始
 
 ### 1. 登录微信账号
@@ -38,6 +30,8 @@ weclaw-pusher login
 会显示二维码，用微信扫描确认即可。
 
 ### 2. 命令行发送消息
+
+`send` 命令独立工作，不需要启动 HTTP API 服务器（`serve` 命令）。它直接从本地凭证文件读取已登录账号，直接连接微信服务器发送消息。
 
 ```bash
 # 发送文本
@@ -121,9 +115,119 @@ weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com,http://ho
 |------|------|
 | `login` | 添加微信账号（扫码登录） |
 | `send` | 发送消息到微信用户 |
-| `serve` | 启动 HTTP API 服务器（发送消息） |
+| `serve` | 启动 HTTP API 服务器（发送消息，需要后台运行） |
 | `listen` | 启动 Webhook 服务器（接收消息） |
-| `stop` | 停止后台服务 |
+## 打包编译
+
+### 从源码编译
+
+```bash
+git clone https://github.com/fastclaw-ai/weclaw-pusher.git
+cd weclaw-pusher
+go build -o weclaw-pusher .
+```
+
+### 发布版本编译（去除调试信息）
+
+```bash
+go build -ldflags="-s -w" -o weclaw-pusher .
+```
+
+### 交叉编译
+
+#### macOS (Intel & Apple Silicon)
+
+```bash
+# Intel
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o weclaw-pusher-darwin-amd64 .
+
+# Apple Silicon
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o weclaw-pusher-darwin-arm64 .
+```
+
+#### Linux
+
+```bash
+# AMD64
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o weclaw-pusher-linux-amd64 .
+
+# ARM64
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o weclaw-pusher-linux-arm64 .
+```
+
+#### Windows
+
+```bash
+# AMD64
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o weclaw-pusher-windows-amd64.exe .
+```
+
+#### 一键全平台打包脚本
+
+```bash
+#!/bin/bash
+
+VERSION=${1:-latest}
+OUTPUT_DIR=dist
+
+mkdir -p $OUTPUT_DIR
+
+# macOS
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o $OUTPUT_DIR/weclaw-pusher-darwin-amd64 .
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o $OUTPUT_DIR/weclaw-pusher-darwin-arm64 .
+
+# Linux
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $OUTPUT_DIR/weclaw-pusher-linux-amd64 .
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $OUTPUT_DIR/weclaw-pusher-linux-arm64 .
+
+# Windows
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o $OUTPUT_DIR/weclaw-pusher-windows-amd64.exe .
+
+echo "Build complete: $OUTPUT_DIR/"
+ls -lh $OUTPUT_DIR
+```
+
+### 编译参数说明
+
+| 参数 | 说明 |
+|------|------|
+| `-s` | 去除符号表（strip symbols） |
+| `-w` | 去除 DWARF 调试信息 |
+| `-ldflags` | 设置链接器标志 |
+
+### 使用 GoReleaser 打包
+
+项目根目录创建 `.goreleaser.yml`:
+
+```yaml
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - binary: weclaw-pusher
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tarball
+    format_overrides:
+      - goos: windows
+        format: zip
+```
+
+执行打包:
+
+```bash
+goreleaser build --clean --snapshot --output dist/
+```
 
 ## listen 命令选项
 
