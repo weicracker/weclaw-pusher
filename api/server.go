@@ -43,6 +43,7 @@ type Server struct {
 	contextTokenMap sync.Map
 	userToBot      sync.Map // key=userID, value=botID
 	clientDead     sync.Map // key=botID, value=bool
+	userToBotPath  string   // path to persist user->bot mapping
 }
 
 // NewServer creates an API server.
@@ -61,6 +62,7 @@ func NewServer(clients []*ilink.Client, addr string) *Server {
 		log.Printf("[api] registered bot_id=%s user_id=%s", c.BotID(), c.UserID())
 	}
 	s.initSyncBufs()
+	s.initUserToBot()
 	return s
 }
 
@@ -76,6 +78,7 @@ func (s *Server) initSyncBufs() {
 		accountID := ilink.NormalizeAccountID(c.BotID())
 		bufPath := filepath.Join(home, ".weclaw", "accounts", accountID+".sync.json")
 		s.bufPaths[c.BotID()] = bufPath
+
 		data, err := os.ReadFile(bufPath)
 		if err != nil {
 			continue
@@ -88,6 +91,46 @@ func (s *Server) initSyncBufs() {
 			log.Printf("[api] loaded sync buf for bot %s from %s", c.BotID(), bufPath)
 		}
 	}
+
+	// Set userToBot persist path
+	if len(s.clients) > 0 {
+		s.userToBotPath = filepath.Join(home, ".weclaw", "accounts", "user_to_bot.json")
+	}
+}
+
+func (s *Server) initUserToBot() {
+	if s.userToBotPath == "" {
+		return
+	}
+	data, err := os.ReadFile(s.userToBotPath)
+	if err != nil {
+		return
+	}
+	var mapping map[string]string
+	if json.Unmarshal(data, &mapping) == nil && len(mapping) > 0 {
+		for userID, botID := range mapping {
+			s.userToBot.Store(userID, botID)
+		}
+		log.Printf("[api] loaded user->bot mapping: %d entries", len(mapping))
+	}
+}
+
+func (s *Server) saveUserToBot() {
+	if s.userToBotPath == "" {
+		return
+	}
+	mapping := make(map[string]string)
+	s.userToBot.Range(func(key, value interface{}) bool {
+		mapping[key.(string)] = value.(string)
+		return true
+	})
+	if len(mapping) == 0 {
+		return
+	}
+	dir := filepath.Dir(s.userToBotPath)
+	os.MkdirAll(dir, 0o700)
+	data, _ := json.Marshal(mapping)
+	os.WriteFile(s.userToBotPath, data, 0o600)
 }
 
 func (s *Server) saveSyncBuf(botID string) {
@@ -238,6 +281,8 @@ func (s *Server) doKeepAliveForClient(ctx context.Context, client *ilink.Client)
 			s.contextTokenMap.Store(msg.FromUserID, msg.ContextToken)
 		}
 	}
+	// Persist user->bot mapping to disk
+	s.saveUserToBot()
 	return false
 }
 
