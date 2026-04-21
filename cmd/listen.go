@@ -21,8 +21,9 @@ import (
 var (
 	listenAddrFlag       string
 	nonBlockingFlag      bool
-	blockingTimeoutFlag  int    // seconds, 0 = infinite
-	callbackURLsFlag      string // PUSH mode: comma-separated callback URLs
+	blockingTimeoutFlag  int
+	callbackURLsFlag     string
+	accountCallbackFlag  string
 )
 
 func init() {
@@ -30,6 +31,7 @@ func init() {
 	listenCmd.Flags().BoolVarP(&nonBlockingFlag, "non-blocking", "n", false, "Non-blocking mode: return immediately with queued messages")
 	listenCmd.Flags().IntVar(&blockingTimeoutFlag, "timeout", 60, "Blocking timeout in seconds (0 = infinite)")
 	listenCmd.Flags().StringVar(&callbackURLsFlag, "callback-url", "", "Callback URL(s) to POST messages to (comma-separated for multiple, PUSH mode)")
+	listenCmd.Flags().StringVar(&accountCallbackFlag, "account-callback", "", "Per-account callback URLs (format: 0=http://url1,1=http://url2)")
 	rootCmd.AddCommand(listenCmd)
 }
 
@@ -45,8 +47,8 @@ var listenCmd = &cobra.Command{
   # PUSH mode: POST messages to single callback URL
   weclaw-pusher listen --callback-url http://example.com/webhook
 
-  # PUSH mode: broadcast to multiple callback URLs (comma-separated)
-  weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com"
+  # PUSH mode: per-account callbacks
+  weclaw-pusher listen --account-callback "0=http://hook1.com,1=http://hook2.com"
 
   # Custom address
   weclaw-pusher listen --listen-addr 0.0.0.0:8080`,
@@ -54,11 +56,12 @@ var listenCmd = &cobra.Command{
 }
 
 type receivedMessage struct {
-	From    string    `json:"from"`
-	To      string    `json:"to"`
-	Type    int       `json:"type"`
-	Text    string    `json:"text,omitempty"`
-	Time    time.Time `json:"time"`
+	From  string    `json:"from"`
+	To    string    `json:"to"`
+	Type  int       `json:"type"`
+	Text  string    `json:"text,omitempty"`
+	Time  time.Time `json:"time"`
+	BotID string    `json:"bot_id,omitempty"`
 }
 
 var (
@@ -68,21 +71,33 @@ var (
 	callbackURLs []string
 )
 
-// runListen starts the monitor and webhook server
 func runListen(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Parse callback URLs
 	if callbackURLsFlag != "" {
 		callbackURLs = strings.Split(callbackURLsFlag, ",")
 		for i := range callbackURLs {
 			callbackURLs[i] = strings.TrimSpace(callbackURLs[i])
 		}
-		log.Printf("[listen] Callback URLs: %d configured", len(callbackURLs))
+		log.Printf("[listen] Global callback URLs: %d configured", len(callbackURLs))
 	}
 
-	// Load all accounts
+	accountCallbacks := make(map[int]string)
+	if accountCallbackFlag != "" {
+		pairs := strings.Split(accountCallbackFlag, ",")
+		for _, pair := range pairs {
+			kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(kv) == 2 {
+				var idx int
+				if _, err := fmt.Sscanf(kv[0], "%d", &idx); err == nil {
+					accountCallbacks[idx] = strings.TrimSpace(kv[1])
+					log.Printf("[listen] Account %d callback: %s", idx, accountCallbacks[idx])
+				}
+			}
+		}
+	}
+
 	accounts, err := ilink.LoadAllCredentials()
 	if err != nil {
 		return fmt.Errorf("failed to load credentials: %w", err)
@@ -90,58 +105,69 @@ func runListen(cmd *cobra.Command, args []string) error {
 	if len(accounts) == 0 {
 		return fmt.Errorf("no accounts found, run 'weclaw-pusher login' first")
 	}
+	log.Printf("[listen] Found %d account(s)", len(accounts))
 
-	// Create client
-	client := ilink.NewClient(accounts[0])
-
-	// Initialize sync primitives
 	msgCond = sync.NewCond(&sync.Mutex{})
 	receivedMsgs = make([]receivedMessage, 0)
 
-	// Create message handler that stores messages and optionally pushes to callbacks
-	handler := func(ctx context.Context, c *ilink.Client, msg ilink.WeixinMessage) {
-		rm := receivedMessage{
-			From: msg.FromUserID,
-			To:   msg.ToUserID,
-			Type: msg.MessageType,
-			Time: time.Now(),
-		}
-		// Extract text
-		for _, item := range msg.ItemList {
-			if item.Type == ilink.ItemTypeText && item.TextItem != nil {
-				rm.Text = item.TextItem.Text
-				break
+	makeHandler := func(accountIndex int, callbackURL string) func(ctx context.Context, c *ilink.Client, msg ilink.WeixinMessage) {
+		return func(ctx context.Context, c *ilink.Client, msg ilink.WeixinMessage) {
+			rm := receivedMessage{
+				From:  msg.FromUserID,
+				To:    msg.ToUserID,
+				Type:  msg.MessageType,
+				Time:  time.Now(),
+				BotID: c.BotID(),
 			}
-		}
-		log.Printf("[listen] received: %s", ilink.FormatMessageSummary(msg))
-
-		// PUSH mode: send to all callback URLs
-		if len(callbackURLs) > 0 {
-			for _, url := range callbackURLs {
-				go pushToCallback(rm, url)
+			for _, item := range msg.ItemList {
+				if item.Type == ilink.ItemTypeText && item.TextItem != nil {
+					rm.Text = item.TextItem.Text
+					break
+				}
 			}
-		}
+			log.Printf("[listen] received from account %d: %s", accountIndex, ilink.FormatMessageSummary(msg))
 
-		msgCond.L.Lock()
-		receivedMsgs = append(receivedMsgs, rm)
-		msgCond.L.Unlock()
-		msgCond.Signal()
+			if callbackURL != "" {
+				go pushToCallback(rm, callbackURL)
+			}
+
+			msgCond.L.Lock()
+			receivedMsgs = append(receivedMsgs, rm)
+			msgCond.L.Unlock()
+			msgCond.Signal()
+		}
 	}
 
-	// Create and start monitor
-	monitor, err := ilink.NewMonitor(client, handler)
-	if err != nil {
-		return fmt.Errorf("create monitor: %w", err)
+	var wg sync.WaitGroup
+	for i, cred := range accounts {
+		client := ilink.NewClient(cred)
+
+		callbackURL := ""
+		if cb, ok := accountCallbacks[i]; ok {
+			callbackURL = cb
+		} else if len(callbackURLs) > 0 {
+			callbackURL = callbackURLs[i%len(callbackURLs)]
+		}
+		if callbackURL != "" {
+			log.Printf("[listen] Account %d (%s) will push to: %s", i, client.BotID(), callbackURL)
+		}
+
+		handler := makeHandler(i, callbackURL)
+		monitor, err := ilink.NewMonitor(client, handler)
+		if err != nil {
+			log.Printf("[listen] failed to create monitor for account %d: %v", i, err)
+			continue
+		}
+
+		wg.Add(1)
+		go func(idx int, m *ilink.Monitor) {
+			defer wg.Done()
+			if err := m.Run(ctx); err != nil {
+				log.Printf("[listen] monitor stopped for account %d: %v", idx, err)
+			}
+		}(i, monitor)
 	}
 
-	// Start monitor in background
-	go func() {
-		if err := monitor.Run(ctx); err != nil {
-			log.Printf("[monitor] stopped: %v", err)
-		}
-	}()
-
-	// Setup webhook server (only if no callback URLs)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/webhook", handleWebhook)
 	mux.HandleFunc("/api/messages", handleMessages)
@@ -162,19 +188,19 @@ func runListen(cmd *cobra.Command, args []string) error {
 	if nonBlockingFlag {
 		mode = "non-blocking"
 	}
-	if len(callbackURLs) > 0 {
-		mode = fmt.Sprintf("PUSH to %d URL(s)", len(callbackURLs))
+	if len(callbackURLs) > 0 || len(accountCallbacks) > 0 {
+		mode = "PUSH"
 	}
 
-	log.Printf("[listen] Starting (mode: %s)", mode)
-	if len(callbackURLs) == 0 {
+	log.Printf("[listen] Starting %s mode", mode)
+	if len(callbackURLs) == 0 && len(accountCallbacks) == 0 {
 		log.Printf("[listen] Webhook: GET %s/api/webhook", addr)
 	}
 	log.Printf("[listen] Waiting for messages... (Ctrl+C to stop)")
 
-	if len(callbackURLs) > 0 {
-		// PUSH mode: don't start webhook server, just wait
+	if len(callbackURLs) > 0 || len(accountCallbacks) > 0 {
 		<-ctx.Done()
+		wg.Wait()
 		return nil
 	}
 
@@ -182,10 +208,10 @@ func runListen(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server error: %w", err)
 	}
 
+	wg.Wait()
 	return nil
 }
 
-// pushToCallback POSTs a message to a single callback URL
 func pushToCallback(msg receivedMessage, url string) {
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -229,48 +255,42 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 	defer msgCond.L.Unlock()
 
 	if nonBlockingFlag {
-		// Non-blocking: return immediately
 		msgs := make([]receivedMessage, len(receivedMsgs))
 		copy(msgs, receivedMsgs)
 		receivedMsgs = receivedMsgs[:0]
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "ok",
-			"count":   len(msgs),
+			"status":   "ok",
+			"count":    len(msgs),
 			"messages": msgs,
 		})
 		return
 	}
 
-	// Blocking mode
 	if blockingTimeoutFlag > 0 {
-		// With timeout
 		deadline := time.Now().Add(time.Duration(blockingTimeoutFlag) * time.Second)
 		for len(receivedMsgs) == 0 && time.Now().Before(deadline) {
 			msgCond.Wait()
 		}
 	} else {
-		// Infinite wait
 		for len(receivedMsgs) == 0 {
 			msgCond.Wait()
 		}
 	}
 
-	// Get all messages and clear
 	msgs := make([]receivedMessage, len(receivedMsgs))
 	copy(msgs, receivedMsgs)
 	receivedMsgs = receivedMsgs[:0]
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
-		"count":   len(msgs),
+		"status":   "ok",
+		"count":    len(msgs),
 		"messages": msgs,
 	})
 }
 
-// handleMessages is an alternative endpoint that always returns immediately
 func handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -285,8 +305,8 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
-		"count":   len(msgs),
+		"status":   "ok",
+		"count":    len(msgs),
 		"messages": msgs,
 	})
 }

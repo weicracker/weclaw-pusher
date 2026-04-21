@@ -4,6 +4,7 @@
 
 ## 功能特性
 
+- **多账号支持**: 支持同时登录多个微信账号
 - **命令行发送**: 通过 CLI 发送文本和媒体消息
 - **HTTP API**: 提供 REST API 接口用于发送和接收消息
 - **消息接收**: 支持 Webhook 方式接收微信消息
@@ -27,7 +28,7 @@ go install github.com/fastclaw-ai/weclaw-pusher@latest
 weclaw-pusher login
 ```
 
-会显示二维码，用微信扫描确认即可。
+会显示二维码，用微信扫描确认即可。重复登录可添加多个账号。
 
 ### 2. 命令行发送消息
 
@@ -95,6 +96,56 @@ weclaw-pusher listen --callback-url http://your-server.com/webhook
 
 # 多回调广播: 收到消息同时 POST 到多个 URL（逗号分隔）
 weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com,http://hook3.com"
+
+# 多账号独立回调: 每个账号的消息推送到不同的 URL
+weclaw-pusher listen --account-callback "0=http://hook1.com,1=http://hook2.com"
+```
+
+## 多账号使用
+
+### 登录多个账号
+
+重复执行 `login` 命令即可添加多个微信账号：
+
+```bash
+weclaw-pusher login  # 第一个账号
+weclaw-pusher login  # 第二个账号
+```
+
+### serve 模式（API 发送）
+
+启动一个服务即可服务所有账号：
+
+```bash
+weclaw-pusher serve
+```
+
+**路由机制：** 用户先给机器人发消息 → 系统自动建立"用户 ↔ 账号"映射 → 之后 API 调用时根据 `to` 参数自动选择正确的账号发送。
+
+```bash
+# 回复用户A（系统自动选择接收过A消息的账号）
+curl -X POST http://localhost:18011/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "用户A的ID", "text": "hello"}'
+
+# 回复用户B（系统自动选择接收过B消息的账号）
+curl -X POST http://localhost:18011/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "用户B的ID", "text": "hello"}'
+```
+
+**注意：** 目标用户必须先给机器人发一条消息，这样系统才能知道该用户属于哪个微信账号。
+
+### listen 模式（接收消息）
+
+每个账号都启动独立的 Monitor 监听消息：
+
+```bash
+# 所有账号共用一个回调（消息中包含 bot_id 标识来源）
+weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com"
+
+# 每个账号独立回调
+weclaw-pusher listen --account-callback "0=http://hook1.com,1=http://hook2.com"
 ```
 
 ## 消息格式
@@ -105,7 +156,8 @@ weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com,http://ho
   "to": "bot_id@im.bot",
   "type": 1,
   "text": "用户发送的消息内容",
-  "time": "2026-04-16T09:00:00Z"
+  "time": "2026-04-16T09:00:00Z",
+  "bot_id": "账号ID（多账号时标识消息来源）"
 }
 ```
 
@@ -117,6 +169,7 @@ weclaw-pusher listen --callback-url "http://hook1.com,http://hook2.com,http://ho
 | `send` | 发送消息到微信用户 |
 | `serve` | 启动 HTTP API 服务器（发送消息，需要后台运行） |
 | `listen` | 启动 Webhook 服务器（接收消息） |
+
 ## 打包编译
 
 ### 从源码编译
@@ -237,6 +290,7 @@ goreleaser build --clean --snapshot --output dist/
 | `--non-blocking, -n` | 非阻塞模式，立即返回 |
 | `--timeout` | 阻塞超时（秒，0=无限） |
 | `--callback-url` | 回调 URL，PUSH 模式（逗号分隔多个） |
+| `--account-callback` | 每个账号独立的回调 URL（格式：0=http://url1,1=http://url2） |
 
 ## 配置
 
@@ -248,7 +302,7 @@ goreleaser build --clean --snapshot --output dist/
 }
 ```
 
-账号凭证存储在 `~/.weclaw/accounts/` 目录。
+账号凭证存储在 `~/.weclaw/accounts/` 目录。每个账号的凭证存储为独立的 JSON 文件。
 
 ## 与 weclaw 的区别
 
